@@ -1,31 +1,31 @@
-# data_analytics
+# Data_Analytics
 SQL PARTITION BY Examples
 This repository contains examples of using the PARTITION BY clause in SQL to perform various analytical functions. These examples demonstrate how to leverage PARTITION BY to group data within partitions and perform calculations or rankings over those partitions.
 
-What is PARTITION BY?
+What is PARTITION BY?  
 
 The PARTITION BY clause in SQL is used to divide the result set into partitions and perform computations on each partition independently. It is commonly used with window functions to calculate aggregations, rankings, and other operations across partitions of data.
 
 Key Points:
 
 Partitioning: The data is divided into segments (partitions) based on one or more columns.
-Window Functions: Functions like ROW_NUMBER(), RANK(), DENSE_RANK(), SUM(), AVG(), COUNT(), LAG(), LEAD(), FIRST_VALUE(), and LAST_VALUE() can be used with PARTITION BY.
+Window Functions: Functions like ROW_NUMBER(), RANK(), DENSE_RANK(), SUM(), AVG(), COUNT(), LAG(), LEAD(), FIRST_VALUE(), and LAST_VALUE() can be used with PARTITION BY.  
 
 Examples
 
-Example 1: ROW_NUMBER() with PARTITION BY
+Example 1: ROW_NUMBER() with PARTITION BY  
 
 Assigns a unique sequential integer to rows within a partition, ordered by the specified column.
 
 Description: This example assigns a unique row number to each employee within their department based on their salary in descending order.
 
-Example 2: RANK() with PARTITION BY
+Example 2: RANK() with PARTITION BY  
 
 Assigns a rank to each row within a partition, with gaps in the ranking for ties.
 
 Description: This example ranks employees within their department based on their salary in descending order. Employees with the same salary receive the same rank, with a gap following ties.
 
-Example 3: DENSE_RANK() with PARTITION BY
+Example 3: DENSE_RANK() with PARTITION BY  
 
 Assigns a rank to each row within a partition, without gaps in the ranking for ties.
 
