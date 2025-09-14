@@ -1,0 +1,254 @@
+# Data_Analytics SQL
+
+/* Часть 1. Разработка витрины данных
+*/
+--сбор информации о оплате по типам
+WITH 
+-- в оценках есть ошибка: одна часть значений представлена по шкале от 1 до 5, а другая — от 10 до 50
+reviews_err AS (
+SELECT
+	order_id,
+AVG(CASE 
+	WHEN review_score >=10 THEN review_score /10
+	ELSE review_score
+END) avg_order_rating
+FROM ds_ecom.order_reviews
+ WHERE review_score > 0 
+ GROUP BY order_id
+),
+--топ 3 региона по кол-ву заказов
+region_top_three AS(
+SELECT 
+	region,
+	COUNT(DISTINCT o.order_id) region_count
+    FROM ds_ecom.orders o
+    JOIN ds_ecom.users u USING(buyer_id)
+    WHERE order_status IN ('Доставлено', 'Отменено')
+    GROUP BY region
+    ORDER BY region_count DESC
+    LIMIT 3
+),
+-- Агрегируем данные по товарам на уровенe заказа
+order_items_agr AS (
+    SELECT
+        order_id,
+        SUM(price) total_items_price, -- cумма стоимости всех товаров в заказе
+        SUM(delivery_cost) total_delivery_cost -- cумма стоимости доставки 
+    FROM ds_ecom.order_items
+    GROUP BY order_id
+),
+-- Агрегируем данные по платежам на уровенe заказа
+order_payments_agr AS (
+    SELECT
+        DISTINCT order_id,
+        BOOL_OR (payment_type = 'промокод') OVER (PARTITION BY order_id) used_promo_order, --хотя бы один промокод
+        CASE 
+        	WHEN FIRST_VALUE(payment_type) OVER (PARTITION BY order_id ORDER BY payment_sequential) = 'денежный перевод' THEN TRUE
+        	ELSE FALSE
+        END used_money_transfer_order,   --  первый тип оплаты 
+        BOOL_OR(payment_installments > 1) OVER (PARTITION BY order_id) used_installments_order, --хотя бы один платеж в рассрочку
+        COUNT( CASE WHEN payment_type = 'промокод' THEN 1 END) OVER (PARTITION BY order_id) promo_payments_count -- kол-во промокодов
+    FROM ds_ecom.order_payments
+),
+--агрегированная информация по заказам
+order_activ_agr AS (
+SELECT	
+	user_id,
+	region,
+	order_id,
+	--buyer_id,
+	order_status,
+	order_purchase_ts,
+	-- Стоимость заказа
+	CASE 
+		WHEN order_status = 'Отменено' THEN 0 
+		ELSE COALESCE(total_items_price, 0) + COALESCE(total_delivery_cost, 0) 
+	END order_cost, 
+	avg_order_rating,
+    used_money_transfer_order,
+    used_installments_order,
+    used_promo_order,
+    promo_payments_count
+FROM ds_ecom.orders o 
+JOIN ds_ecom.users u USING (buyer_id)
+LEFT JOIN order_items_agr USING(order_id)
+LEFT JOIN order_payments_agr USING (order_id)
+LEFT JOIN reviews_err USING(order_id )
+WHERE region IN (SELECT region FROM region_top_three) AND (order_status = 'Отменено' OR order_status = 'Доставлено')
+),
+product_user_features AS(
+	SELECT 
+		user_id,										--уникальный идентификатор клиента
+		region,		
+		MIN(order_purchase_ts)   first_order_ts,		--дата и время первого заказа
+		MAX(order_purchase_ts)  last_order_ts,			--дата и время последнего заказа
+	    COUNT (DISTINCT order_id) total_orders,		
+	    COUNT(CASE WHEN order_status = 'Отменено' THEN order_id END) num_canceled_orders,  --количество отменённых заказов
+	    SUM(order_cost)  total_order_costs, 
+	    AVG (avg_order_rating) avg_order_rating,
+        COUNT(avg_order_rating) num_orders_with_rating,
+  		BOOL_OR(used_money_transfer_order) used_money_transfer,
+        BOOL_OR(used_installments_order)  used_installments,
+        BOOL_OR(used_promo_order)  used_promo,
+        SUM(promo_payments_count)  num_orders_with_promo,
+        SUM(CASE WHEN used_installments_order THEN 1 ELSE 0 END) num_installment_orders --количество заказов, оплаченных в рассрочку
+	 FROM order_activ_agr  
+	 GROUP BY user_id, region
+)
+SELECT 
+user_id,				--уникальный идентификатор клиента
+region,					--регион, из которого был сделан заказ
+first_order_ts,			--дата и время первого заказа
+last_order_ts,			--дата и время последнего заказа
+(last_order_ts - first_order_ts)lifetime,				--жизненный цикл клиента, то есть сколько дней прошло между первым и последним заказом
+total_orders,			--общее количество заказов
+ROUND(COALESCE(avg_order_rating,0),2) avg_order_rating,		--средняя оценка, которую пользователь выставляет своим заказам
+num_orders_with_rating,	--количество заказов, для которых получена оценка с рейтингом
+num_canceled_orders,	--количество отменённых заказов
+num_canceled_orders / total_orders::NUMERIC canceled_orders_ratio,	--доля отменённых заказов
+COALESCE(total_order_costs,0) total_order_cost,		--суммарная стоимость всех доставленных пользователю заказов
+ROUND((COALESCE(total_order_costs,0)/ total_orders::NUMERIC),3)  avg_order_cost,			--средняя стоимость заказа.
+COALESCE(num_installment_orders,0) num_installment_orders, --количество заказов, оплаченных в рассрочку
+COALESCE(num_orders_with_promo,0) num_orders_with_promo,  --количество заказов, купленных с использованием промокодов для оплаты
+CASE 
+	WHEN used_money_transfer THEN 1 
+	ELSE 0 
+END used_money_transfer,	--использовал ли клиент денежный перевод хотя бы один раз в качестве первого типа оплаты ( 1 — использовал, 0 — не использовал).
+CASE 
+	WHEN used_installments THEN 1 
+	ELSE 0 
+END used_installments,		--использовал ли клиент рассрочку хотя бы один раз ( 1 — использовал, 0 — не использовал)
+CASE 
+	WHEN num_canceled_orders>0 THEN 1
+	ELSE 0
+END used_cancel				--отменял ли клиент хотя бы один заказ
+FROM  product_user_features
+ORDER BY total_order_cost DESC
+
+/* Часть 2. Решение ad hoc задач
+ 
+/* Задача 1. Сегментация пользователей 
+ * Разделение пользователей на группы по количеству совершённых ими заказов.
+ * Подсчет для каждой группы общее количество пользователей,
+ * среднего количества заказов, средней стоимость заказа.
+ * 
+ * Выделины такие сегменты:
+ * - 1 заказ — сегмент 1 заказ
+ * - от 2 до 5 заказов — сегмент 2-5 заказов
+ * - от 6 до 10 заказов — сегмент 6-10 заказов
+ * - 11 и более заказов — сегмент 11 и более заказов
+*/
+
+WITH 
+-- Ранжирование клиентов по количеству заказа:
+users_rank AS (
+SELECT 
+	user_id,
+	total_orders,
+	total_order_costs,
+CASE 
+	WHEN total_orders = 1 THEN 'сегмент 1 заказ'
+	WHEN total_orders BETWEEN 2 AND 5 THEN 'сегмент 2-5 заказов'
+	WHEN total_orders BETWEEN 6 AND 10 THEN 'сегмент 6-10 заказов'
+	WHEN total_orders >= 11 THEN 'сегмент 11 и более заказов'
+	ELSE 'non'
+END segment
+FROM ds_ecom.product_user_features 
+)
+-- Основной запрос с подсчётом статистики по рангам:
+SELECT
+	COUNT (user_id) total_users, 							--общее количество пользователей
+	ROUND(AVG (total_orders),1) avg_orders ,				--среднее количество заказов
+--Корректировка решения средний чек: общая сумма трат всех пользователей в сегменте, делённая на общее число их заказов	
+	ROUND(SUM(total_order_costs) / NULLIF(SUM(total_orders),0),3) avg_total_revenue,	--средняя стоимость заказа (средний чек)
+-- Группировка данных по рангу:
+segment 
+FROM users_rank
+GROUP BY segment
+ORDER BY avg_orders, segment 
+
+/* Краткий комментарий с выводами по результатам задачи 1.
+ * Основная доля пользователей сделала только один заказ за время выборки. 
+ * Что связано либо с видом заказа(например объект недвижимости или авто) 
+ * либо с плохой возвращаемостью клиента.
+*/
+
+
+/* Задача 2. Ранжирование пользователей 
+ * Сортировка пользователей, сделавших 3 заказа и более, по убыванию среднего чека покупки.  
+ * Вывод 15 пользователей с самым большим средним чеком среди указанной группы.
+*/
+SELECT 
+	user_id,
+	avg_order_cost, 
+	total_orders
+FROM ds_ecom.product_user_features 
+WHERE total_orders>=3
+ORDER BY avg_order_cost DESC 
+LIMIT 15
+
+/* Краткий комментарий с выводами по результатам задачи 2.
+ * У пользователей, сделавших 3 заказа и более максимальный средний чек составляет 14717 при 3х заказзах
+Большенство пользователей выборки сделали 3 заказа.
+Практически отсутствует связь между количеством заказов и средним чеком в этой группе выборки ТОП-15 
+**/
+
+/* Задача 3. Статистика по регионам. 
+ * Для каждого региона подсчитайте:
+ * - общее число клиентов и заказов;
+ * - среднюю стоимость одного заказа;
+ * - долю заказов, которые были куплены в рассрочку;
+ * - долю заказов, которые были куплены с использованием промокодов;
+ * - долю пользователей, совершивших отмену заказа хотя бы один раз.
+*/
+
+SELECT 
+region, 
+COUNT(user_id) count_users,-- общее число клиентов 
+SUM(total_orders) count_orders, --и заказов
+ROUND(SUM(total_order_costs)/NULLIF(SUM(total_orders),0),3) avg_order_cost, -- среднюю стоимость одного заказа
+ROUND(SUM(num_installment_orders)::numeric/NULLIF(SUM(total_orders),0),3) installment_share, -- долю заказов, которые были куплены в рассрочку;
+ROUND(SUM(num_orders_with_promo)::numeric/NULLIF(SUM(total_orders),0),3) orders_with_promo_shar,-- долю заказов, которые были куплены с использованием промокодов;
+ROUND(AVG(used_cancel),3) cancel_share-- доля пользователей, совершивших отмену заказа хотя бы один раз.
+FROM ds_ecom.product_user_features
+GROUP BY region 
+ORDER BY count_users DESC
+
+/* Напишите краткий комментарий с выводами по результатам задачи 3.
+ * Несмотря на высокое количество клиентов в Москве, пользователи Москвы не спешат использовать рассрочку платежа (47% в Москве против 54% в других регионах) и предпочитают более экономные покупки по сравнению с другими регионами.
+Средняя стоимость заказа 3140 в Москве против 3593 в Санкт-Петербурге.
+Также в Москве мы имеем большую долю отмены заказов по сравнению с другими регионами.
+Таким образом, если цель заработать на оборачиваемости предлагаемого продукта, то оптимально продвижение товара в Москве, уделяя внимание ценовой политике.
+Если цель заработать на процентах по рассрочке. то возможно следует более детально рассомтреть продвижение товаров в регионы, уделив внимание условиям по рассрочке платежей.
+*/
+
+/* Задача 4. Активность пользователей по первому месяцу заказа в 2023 году
+ * Разбеение пользователей на группы в зависимости от того, в какой месяц 2023 года они совершили первый заказ.
+ * Для каждой группы посчитано:
+ * - общее количество клиентов, число заказов и среднюю стоимость одного заказа;
+ * - средний рейтинг заказа;
+ * - доля пользователей, использующих денежные переводы при оплате;
+ * - средняя продолжительность активности пользователя.
+*/
+
+SELECT 
+EXTRACT(MONTH FROM first_order_ts) months,
+TO_CHAR(first_order_ts, 'Month') AS month_name, -- название месяца
+COUNT(user_id) count_users,-- общее число клиентов 
+SUM(total_orders) count_orders, --и заказов
+ROUND(SUM(total_order_costs)/NULLIF(SUM(total_orders),0),3) avg_orders, -- среднюю стоимость одного заказа
+ROUND(SUM(avg_order_rating*num_orders_with_rating)/NULLIF(SUM(num_orders_with_rating),0),3) avg_rating,--средний рейтинг заказа
+ROUND(COUNT(CASE WHEN used_money_transfer = 1 THEN user_id END)::numeric/COUNT(user_id),3) money_transfer_share, --долю пользователей, использующих денежные переводы при оплате
+AVG(lifetime) avg_lifetime --среднюю продолжительность активности пользователя
+FROM ds_ecom.product_user_features
+WHERE EXTRACT (YEAR FROM first_order_ts) = 2023
+GROUP BY months, month_name
+
+/* Краткий комментарий с выводами по результатам задачи 4.
+ *В 2023 году количество клиентов увеличилось с 1063 за февраль до 3592 за декабрь. Существенный рост показал 4 квартал 2023.
+Максимальное количество клиентов и заказов пришлось на ноябрь. Возможно, это связано с правильной или увеличенной рекламной активностью и особенностью продукта, связанной с предновогодней продажей.
+Доля пользователей, использующих денежные переводы при оплате, в течение года практически не изменилась.
+Также в течение года наблюдается уменьшение средней продолжительности активности пользователей (с 7 дней за февраль до 2-х дней за декабрь) с одновременным уменьшением среднего рейтинга заказа (с 4.167 за февраль до 4.08 за декабрь).
+Несмотря на увеличение в конце года количества пользователей (с 1063 за февраль до 3592 за декабрь), средняя сумма покупки пользователя показывает несущественное увеличение (с 2556 за февраль до 3163 за декабрь).
+Возможно, отсутствовало существенное изменение ценовой политики продуктов, эффективные допродажи доп. товаров и программы лояльности на увеличение покупок.
+
