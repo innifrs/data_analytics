@@ -1,7 +1,6 @@
-# Data_Analytics
+# Data_Analytics SQL
 
-SQL PARTITION BY Examples  
-
-This repository contains examples of using the PARTITION BY clause in SQL to perform various analytical functions.  
-These examples demonstrate how to leverage PARTITION BY to group data within partitions and perform calculations or rankings over those partitions.
+Построение с помощью SQL витрины клиентских данных product_user_features, используя информацию о заказах пользователей. 
+Витрина содержит информацию о заказах каждого клиента с учётом его региона.
+Четыре ad hoc задачи на исследование данных в витрине.
 
